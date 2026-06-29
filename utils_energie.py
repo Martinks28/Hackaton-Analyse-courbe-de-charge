@@ -87,7 +87,7 @@ def tracer(data, echelle, debut=None, titre=None, out=None):
 
     ax.set_title(titre or f"{echelle.capitalize()} : {t0.date()} -> {t1.date()}",
                  fontsize=13, fontweight="bold")
-    ax.set_ylabel("valeur brute")
+    ax.set_ylabel("Puissance en W")
     ax.grid(alpha=0.3)
     if len(sous.columns) > 1:
         ax.legend(fontsize=8, ncol=2)
