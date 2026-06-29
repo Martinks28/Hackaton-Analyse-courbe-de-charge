@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
 EXCEL_EPOCH = pd.Timestamp("1899-12-30")
-DUREES = {"jour": "1D", "semaine": "7D", "mois": "1MS", "annee": "1YS"}
+DUREES = {"jour": "1D", "semaine": "7D", "mois": "1MS", "annee": "1YS", "tout": None}
 
 
 def _serie_en_datetime(s):
@@ -76,29 +76,45 @@ def fenetre(data, echelle, debut=None):
     return data.loc[t0:t1], t0, t1
 
 
-def tracer(data, echelle, debut=None, titre=None, out=None):
-    sous, t0, t1 = fenetre(data, echelle, debut)
+def tracer(data, echelle="tout", debut=None, titre=None, out=None):
+    # 1. Gestion de la nouvelle échelle "tout"
+    if echelle == "tout":
+        sous = data
+        t0 = data.index.min()
+        t1 = data.index.max()
+    else:
+        # On ne fait appel au découpage que si on demande une échelle précise
+        sous, t0, t1 = fenetre(data, echelle, debut)
+        
     if sous.empty:
         raise ValueError(f"Aucune donnee entre {t0.date()} et {t1.date()}")
 
+    # 2. Création de la figure
     fig, ax = plt.subplots(figsize=(14, 5))
     for col in sous.columns:
         ax.plot(sous.index, sous[col], lw=0.8, label=str(col))
 
-    ax.set_title(titre or f"{echelle.capitalize()} : {t0.date()} -> {t1.date()}",
-                 fontsize=13, fontweight="bold")
+    # Adaptation du titre par défaut selon l'échelle
+    titre_defaut = f"Vue globale : {t0.date()} -> {t1.date()}" if echelle == "tout" else f"{echelle.capitalize()} : {t0.date()} -> {t1.date()}"
+    ax.set_title(titre or titre_defaut, fontsize=13, fontweight="bold")
+    
     ax.set_ylabel("Puissance en W")
     ax.grid(alpha=0.3)
     if len(sous.columns) > 1:
         ax.legend(fontsize=8, ncol=2)
 
-    # format de l'axe temps adapte a l'echelle
+    # 3. Format de l'axe temps adapté à l'échelle
     if echelle == "jour":
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Hh"))
     elif echelle == "semaine":
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%a %d/%m"))
+    elif echelle == "tout" or echelle == "annee":
+        # Pour une vue globale, afficher "Mois Année" (ex: Jan 2022) évite de surcharger l'axe
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
     else:
+        # Pour le mois
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m/%y"))
+        
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
 
     fig.tight_layout()
