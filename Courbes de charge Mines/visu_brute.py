@@ -27,29 +27,53 @@ EXCEL_EPOCH = pd.Timestamp("1899-12-30")
 DUREES = {"jour": "1D", "semaine": "7D", "mois": "1MS", "annee": "1YS"}
 
 
-def _to_datetime(s):
-    """Le timestamp peut etre une vraie date OU un numero de serie Excel."""
+def _serie_en_datetime(s):
+    """Convertit une colonne en datetime, qu'elle soit deja une date,
+    un numero de serie Excel, ou du texte (format jour/mois/annee)."""
     if np.issubdtype(s.dtype, np.datetime64):
         return pd.to_datetime(s)
-    return EXCEL_EPOCH + pd.to_timedelta(s.astype(float), unit="D")
+    if pd.api.types.is_numeric_dtype(s):
+        return EXCEL_EPOCH + pd.to_timedelta(s.astype(float), unit="D")
+    return pd.to_datetime(s.astype(str), dayfirst=True, errors="coerce")
+
+
+def _construire_index(df):
+    """Construit l'index temporel et renvoie aussi les colonnes consommees.
+
+    Gere trois cas :
+      - temps reparti sur deux colonnes 'Date' + 'Time'
+      - une seule colonne temps nommee (Horodate / timestamp / ...)
+      - a defaut, la premiere colonne
+    """
+    cols = {str(c).lower(): c for c in df.columns}
+
+    # cas 1 : Date + Time separes
+    if "date" in cols and "time" in cols:
+        cdate, ctime = cols["date"], cols["time"]
+        d = pd.to_datetime(df[cdate].astype(str), dayfirst=True, errors="coerce")
+        t = pd.to_timedelta(df[ctime].astype(str), errors="coerce")
+        return d + t, [cdate, ctime]
+
+    # cas 2 : une colonne temps nommee, sinon premiere colonne
+    tcol = next((c for c in ("Horodate", "timestamp", "Timestamp", "datetime", "Date")
+                 if c in df.columns), df.columns[0])
+    return _serie_en_datetime(df[tcol]), [tcol]
 
 
 def charger(path):
     """Renvoie un DataFrame indexe par le temps, colonnes = mesures brutes."""
     df = pd.read_excel(path, sheet_name=0)
 
-    # colonne temps : par nom connu, sinon premiere colonne
-    tcol = next((c for c in ("Horodate", "timestamp", "Timestamp", "datetime")
-                 if c in df.columns), df.columns[0])
+    index, cols_temps = _construire_index(df)
 
     # colonnes de mesure : tout sauf le temps et les colonnes d'unite/texte
     val_cols = [c for c in df.columns
-                if c != tcol
+                if c not in cols_temps
                 and not str(c).lower().startswith("unit")
                 and df[c].dtype != object]
 
     data = df[val_cols].apply(pd.to_numeric, errors="coerce")
-    data.index = _to_datetime(df[tcol])
+    data.index = index
     data = data[~data.index.isna()].sort_index()
     return data
 
