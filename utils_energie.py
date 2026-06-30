@@ -4,6 +4,7 @@ import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import plotly.express as px
 
 EXCEL_EPOCH = pd.Timestamp("1899-12-30")
 DUREES = {"jour": "1D", "semaine": "7D", "mois": "1MS", "annee": "1YS", "tout": None}
@@ -125,3 +126,132 @@ def tracer(data, echelle="tout", debut=None, titre=None, out=None):
     plt.show()
 
 
+def tracer_semaine_type_mois(data, mois, titre=None):
+    """
+    Calcule et trace (avec Plotly) la semaine type pour un mois donné,
+    en se basant sur les 12 derniers mois d'historique du fichier.
+    """
+    # 1. Définir la fenêtre des 12 derniers mois (année glissante)
+    date_fin = data.index.max()
+    date_debut = date_fin - pd.DateOffset(years=1)
+    
+    # 2. Filtrer les données sur cette fenêtre stricte
+    df_12_mois = data[(data.index > date_debut) & (data.index <= date_fin)]
+    
+    # 3. Récupérer uniquement le mois demandé
+    df_mois = df_12_mois[df_12_mois.index.month == mois]
+    
+    if df_mois.empty:
+        print(f"Attention : Aucune donnée pour le mois {mois} entre le {date_debut.date()} et le {date_fin.date()}")
+        return None
+        
+    # 4. Calcul de la semaine type (Moyenne)
+    df_mois = df_mois.copy()
+    df_mois['num_jour'] = df_mois.index.dayofweek
+    df_mois['heure_minute'] = df_mois.index.strftime('%H:%M')
+    
+    semaine_type = df_mois.groupby(['num_jour', 'heure_minute']).mean(numeric_only=True)
+    
+    # 5. Reconstruire un index textuel propre
+    noms_axes = []
+    jours_noms = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
+    
+    for (num_jour, hm) in semaine_type.index:
+        noms_axes.append(f"{jours_noms[num_jour]} {hm}")
+        
+    semaine_type.index = noms_axes
+    
+    # 6. Création du graphique interactif Plotly
+    titre_final = titre or f"Semaine type - Mois n°{mois} (Calculée sur les 12 derniers mois)"
+    
+    # px.line trace automatiquement toutes les colonnes du tableau
+    fig = px.line(semaine_type, title=titre_final, 
+                  labels={"index": "Jour et Heure", "value": "Puissance (W)", "variable": "Capteur"})
+    
+    # 7. Nettoyage de l'axe X pour ne pas surcharger l'affichage
+    # On force Plotly à ne mettre une graduation que tous les jours à minuit (tous les 144 points)
+    positions = np.arange(0, len(semaine_type), 144)
+    etiquettes = [semaine_type.index[i] for i in positions]
+    
+    fig.update_xaxes(
+        tickmode='array',
+        tickvals=positions,
+        ticktext=etiquettes
+    )
+    
+    # 8. Esthétique : un curseur unifié pour comparer tous les capteurs d'un coup
+    fig.update_layout(
+        hovermode="x unified",
+        legend_title_text='Légende'
+    )
+    
+    fig.show()
+    
+    # On renvoie le tableau de données au cas où tu voudrais faire d'autres calculs avec !
+    return semaine_type
+
+
+def tracer_semaine_type_mois_filtre(data, mois, span=7, titre=None):
+    """
+    Calcule et trace (avec Plotly) la semaine type pour un mois donné,
+    en appliquant d'abord un filtre passe-bas exponentiel pour éliminer le bruit.
+    """
+    # 1. Définir la fenêtre des 12 derniers mois (année glissante)
+    date_fin = data.index.max()
+    date_debut = date_fin - pd.DateOffset(years=1)
+    
+    # 2. Filtrer les données sur cette fenêtre stricte
+    df_12_mois = data[(data.index > date_debut) & (data.index <= date_fin)].copy()
+    
+    # 3. LE FILTRAGE (On le fait sur l'année entière pour éviter les effets de bord)
+    # On sélectionne uniquement les colonnes numériques (les Watts)
+    cols_num = df_12_mois.select_dtypes(include=[np.number]).columns
+    df_12_mois[cols_num] = df_12_mois[cols_num].ewm(span=span, adjust=False).mean()
+    
+    # 4. Récupérer uniquement le mois demandé après le filtrage
+    df_mois = df_12_mois[df_12_mois.index.month == mois]
+    
+    if df_mois.empty:
+        print(f"Attention : Aucune donnée pour le mois {mois} entre le {date_debut.date()} et le {date_fin.date()}")
+        return None
+        
+    # 5. Calcul de la semaine type (Moyenne des semaines filtrées)
+    df_mois = df_mois.copy()
+    df_mois['num_jour'] = df_mois.index.dayofweek
+    df_mois['heure_minute'] = df_mois.index.strftime('%H:%M')
+    
+    semaine_type = df_mois.groupby(['num_jour', 'heure_minute']).mean(numeric_only=True)
+    
+    # 6. Reconstruire un index textuel propre
+    noms_axes = []
+    jours_noms = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
+    
+    for (num_jour, hm) in semaine_type.index:
+        noms_axes.append(f"{jours_noms[num_jour]} {hm}")
+        
+    semaine_type.index = noms_axes
+    
+    # 7. Création du graphique interactif Plotly
+    titre_final = titre or f"Semaine type (Lissée span={span}) - Mois n°{mois}"
+    
+    fig = px.line(semaine_type, title=titre_final, 
+                  labels={"index": "Jour et Heure", "value": "Puissance lissée (W)", "variable": "Capteur"})
+    
+    # Nettoyage de l'axe X (une graduation tous les minuits = 144 points)
+    positions = np.arange(0, len(semaine_type), 144)
+    etiquettes = [semaine_type.index[i] for i in positions]
+    
+    fig.update_xaxes(
+        tickmode='array',
+        tickvals=positions,
+        ticktext=etiquettes
+    )
+    
+    fig.update_layout(
+        hovermode="x unified",
+        legend_title_text='Légende'
+    )
+    
+    fig.show()
+    
+    return semaine_type
