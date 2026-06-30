@@ -32,6 +32,9 @@ La première étape consiste à visualiser les données. Ensuite nous cherchons 
 ### Guide d'utilisation
 ### Visualisation
 ### Analyse des comportements énergétiques
+* Méthode centile : on cherche la valeur du 5ème centile sur les valeurs de 1h à 4h du matin (là où elles sont les plus basses)
+* Méthode Statmodel
+
 
 ## Glossaire/Définitions
 * **CVC/HVAC :** Chauffage Ventilation Climatisation / Heating Ventilation Air-conditioning
