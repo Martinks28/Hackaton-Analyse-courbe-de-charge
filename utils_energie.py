@@ -255,3 +255,171 @@ def tracer_semaine_type_mois_filtre(data, mois, span=7, titre=None):
     fig.show()
     
     return semaine_type
+
+
+def tracer_difference_semaine_type_mois(data, mois1, mois2, span=7, titre=None):
+    """
+    Calcule et trace la différence de consommation entre la semaine type de deux mois distincts (mois1 - mois2).
+    Utile pour visualiser l'impact saisonnier (chauffage, climatisation) sur les journées types.
+    """
+    # 1. Définir la fenêtre des 12 derniers mois
+    date_fin = data.index.max()
+    date_debut = date_fin - pd.DateOffset(years=1)
+    
+    # 2. Filtrer les données sur cette fenêtre
+    df_12_mois = data[(data.index > date_debut) & (data.index <= date_fin)].copy()
+    
+    # 3. Lissage global pour éviter les effets de bord
+    cols_num = df_12_mois.select_dtypes(include=[np.number]).columns
+    df_12_mois[cols_num] = df_12_mois[cols_num].ewm(span=span, adjust=False).mean()
+    
+    # 4. Extraction et vérification des deux mois
+    df_m1 = df_12_mois[df_12_mois.index.month == mois1].copy()
+    df_m2 = df_12_mois[df_12_mois.index.month == mois2].copy()
+    
+    if df_m1.empty or df_m2.empty:
+        print(f"Attention : Données manquantes pour le mois {mois1} ou {mois2} sur la période analysée.")
+        return None
+
+    # 5. Fonction interne pour calculer la semaine type d'un sous-dataframe
+    def calculer_profil(df):
+        df['num_jour'] = df.index.dayofweek
+        df['heure_minute'] = df.index.strftime('%H:%M')
+        return df.groupby(['num_jour', 'heure_minute']).mean(numeric_only=True)
+
+    semaine_type1 = calculer_profil(df_m1)
+    semaine_type2 = calculer_profil(df_m2)
+    
+    # 6. Soustraction des deux semaines types
+    # L'alignement se fait automatiquement sur le multi-index (num_jour, heure_minute)
+    difference = semaine_type1 - semaine_type2
+    
+    # 7. Reconstruire un index textuel propre pour l'affichage
+    noms_axes = []
+    jours_noms = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
+    
+    for (num_jour, hm) in difference.index:
+        noms_axes.append(f"{jours_noms[num_jour]} {hm}")
+        
+    difference.index = noms_axes
+    
+    # 8. Création du graphique Plotly
+    titre_final = titre or f"Différence de profil type : Mois {mois1} moins Mois {mois2} (span={span})"
+    
+    fig = px.line(difference, title=titre_final, 
+                  labels={"index": "Jour et Heure", "value": "Écart de Puissance (W)", "variable": "Capteur"})
+    
+    # Ajout d'une ligne zéro pour bien repérer qui consomme le plus
+    fig.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
+    
+    # Nettoyage de l'axe X (une graduation tous les minuits = 144 points)
+    positions = np.arange(0, len(difference), 144)
+    etiquettes = [difference.index[i] for i in positions]
+    
+    fig.update_xaxes(tickmode='array', tickvals=positions, ticktext=etiquettes)
+    fig.update_layout(hovermode="x unified", legend_title_text='Légende')
+    
+    fig.show()
+    
+    return difference
+
+
+def calculer_talon(serie, percentile=5):
+    """Estime le talon par un percentile bas, robuste aux trous de mesure.
+
+    Renvoie aussi un estimateur de controle (mediane des minimums journaliers)
+    et la moyenne, pour calculer la part d'energie sous le talon.
+    """
+    talon = serie.quantile(percentile / 100)
+    talon_controle = serie.resample("1D").min().median()
+    moyenne = serie.mean()
+    return talon, talon_controle, moyenne
+
+
+def tracer_talon(path, debut=None, percentile=5, out=None):
+    data = charger(path)
+    sous, t0, t1 = fenetre(data, "semaine", debut)
+    if sous.empty:
+        raise ValueError(f"Aucune donnee entre {t0.date()} et {t1.date()}")
+
+    # courbe totale (somme des sous-compteurs s'il y en a plusieurs)
+    charge = sous.sum(axis=1)
+    talon, talon_ctrl, moyenne = calculer_talon(charge, percentile)
+    part = 100 * talon / moyenne if moyenne else float("nan")
+
+    nom = Path(path).stem
+    print(f"{nom} | semaine {t0.date()} -> {t1.date()}")
+    print(f"  talon (P{percentile})         : {talon:.4g}")
+    print(f"  controle (min/jour median): {talon_ctrl:.4g}")
+    print(f"  moyenne                   : {moyenne:.4g}")
+    print(f"  part d'energie sous talon : {part:.0f} %")
+
+    fig, ax = plt.subplots(figsize=(14, 5.5))
+    ax.plot(charge.index, charge.values, lw=0.8, color="#1f4e79", label="charge")
+    ax.fill_between(charge.index, 0, talon, color="#c55a11", alpha=0.18,
+                    label=f"talon = {talon:.3g}")
+    ax.axhline(talon, color="#c55a11", lw=1.5, ls="--")
+
+    ax.set_title(f"{nom} - talon sur la semaine du {t0.date()}  "
+                 f"(part sous talon : {part:.0f} %)",
+                 fontsize=13, fontweight="bold")
+    ax.set_ylabel("puissance brute")
+    ax.set_ylim(bottom=0)
+    ax.grid(alpha=0.3)
+    ax.legend(loc="upper right")
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%a %d/%m"))
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+
+    fig.tight_layout()
+    if out:
+        fig.savefig(out, dpi=110, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  figure : {out}")
+    else:
+        plt.show()
+
+
+def tracer_talon_annuel_dynamique(path, fenetre_jours=30, percentile=5, out=None):
+    data = charger(path)
+    if data.empty:
+        raise ValueError("Le fichier de données est vide.")
+
+    charge = data.sum(axis=1)
+    
+    # 144 points par jour (pas de temps 10 min)
+    taille_fenetre = fenetre_jours * 144
+    
+    # Calcul du talon glissant (centré pour éviter le déphasage)
+    talon_dynamique = charge.rolling(window=taille_fenetre, center=True, min_periods=144).quantile(percentile/100)
+    
+    # Pour les statistiques globales
+    moyenne_annuelle = charge.mean()
+    talon_moyen = talon_dynamique.mean()
+    part = 100 * talon_moyen / moyenne_annuelle if moyenne_annuelle else float("nan")
+
+    nom = Path(path).stem
+    fig, ax = plt.subplots(figsize=(14, 5.5))
+    
+    # Charge brute en bleu très léger
+    ax.plot(charge.index, charge.values, lw=0.2, color="#1f4e79", alpha=0.4, label="charge brute")
+    
+    # Courbe du talon dynamique (qui évolue selon les mois)
+    ax.plot(talon_dynamique.index, talon_dynamique.values, color="#c55a11", lw=2, label="talon glissant")
+    ax.fill_between(talon_dynamique.index, 0, talon_dynamique.values, color="#c55a11", alpha=0.12)
+
+    ax.set_title(f"{nom} - Évolution du talon sur l'année (Fenêtre : {fenetre_jours}j, part moyenne : {part:.0f} %)",
+                 fontsize=13, fontweight="bold")
+    ax.set_ylabel("puissance brute (W)")
+    ax.set_ylim(bottom=0)
+    ax.grid(alpha=0.3)
+    ax.legend(loc="upper right")
+    
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+
+    fig.tight_layout()
+    if out:
+        fig.savefig(out, dpi=120, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.show()

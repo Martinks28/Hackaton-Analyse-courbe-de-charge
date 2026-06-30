@@ -21,11 +21,9 @@ Exemples :
     python talon.py Jade.xlsx --percentile 10
 """
 
-import argparse
 from pathlib import Path
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")        # commente cette ligne pour une fenetre interactive
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
@@ -87,7 +85,7 @@ def tracer_talon(path, debut=None, percentile=5, out=None):
         plt.show()
 
 
-tracer_talon("Argile.xlsx")
+tracer_talon("Charbon.xlsx")
 
 
 def tracer_talon_annuel_dynamique(path, fenetre_jours=30, percentile=5, out=None):
@@ -136,6 +134,8 @@ def tracer_talon_annuel_dynamique(path, fenetre_jours=30, percentile=5, out=None
         plt.show()
 
 
-tracer_talon_annuel_dynamique("Basalte.xlsx", fenetre_jours=30, percentile=20, out=None)
+tracer_talon_annuel_dynamique("Houille.xlsx", fenetre_jours=30, percentile=10, out=None)
+
+
 
 
