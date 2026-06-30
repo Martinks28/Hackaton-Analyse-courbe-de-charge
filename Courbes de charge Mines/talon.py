@@ -87,12 +87,55 @@ def tracer_talon(path, debut=None, percentile=5, out=None):
         plt.show()
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Identification du talon sur une semaine")
-    ap.add_argument("fichier")
-    ap.add_argument("--debut", default=None, help="AAAA-MM-JJ (defaut : debut du fichier)")
-    ap.add_argument("--percentile", type=float, default=5,
-                    help="percentile bas pour le talon (defaut 5)")
-    ap.add_argument("--out", default=None, help="chemin PNG (defaut : affichage ecran)")
-    args = ap.parse_args()
-    tracer_talon(args.fichier, args.debut, args.percentile, args.out)
+tracer_talon("Argile.xlsx")
+
+
+def tracer_talon_annuel_dynamique(path, fenetre_jours=30, percentile=5, out=None):
+    data = charger(path)
+    if data.empty:
+        raise ValueError("Le fichier de données est vide.")
+
+    charge = data.sum(axis=1)
+    
+    # 144 points par jour (pas de temps 10 min)
+    taille_fenetre = fenetre_jours * 144
+    
+    # Calcul du talon glissant (centré pour éviter le déphasage)
+    talon_dynamique = charge.rolling(window=taille_fenetre, center=True, min_periods=144).quantile(percentile/100)
+    
+    # Pour les statistiques globales
+    moyenne_annuelle = charge.mean()
+    talon_moyen = talon_dynamique.mean()
+    part = 100 * talon_moyen / moyenne_annuelle if moyenne_annuelle else float("nan")
+
+    nom = Path(path).stem
+    fig, ax = plt.subplots(figsize=(14, 5.5))
+    
+    # Charge brute en bleu très léger
+    ax.plot(charge.index, charge.values, lw=0.2, color="#1f4e79", alpha=0.4, label="charge brute")
+    
+    # Courbe du talon dynamique (qui évolue selon les mois)
+    ax.plot(talon_dynamique.index, talon_dynamique.values, color="#c55a11", lw=2, label="talon glissant")
+    ax.fill_between(talon_dynamique.index, 0, talon_dynamique.values, color="#c55a11", alpha=0.12)
+
+    ax.set_title(f"{nom} - Évolution du talon sur l'année (Fenêtre : {fenetre_jours}j, part moyenne : {part:.0f} %)",
+                 fontsize=13, fontweight="bold")
+    ax.set_ylabel("puissance brute (W)")
+    ax.set_ylim(bottom=0)
+    ax.grid(alpha=0.3)
+    ax.legend(loc="upper right")
+    
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+
+    fig.tight_layout()
+    if out:
+        fig.savefig(out, dpi=120, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+tracer_talon_annuel_dynamique("Basalte.xlsx", fenetre_jours=30, percentile=20, out=None)
+
+
