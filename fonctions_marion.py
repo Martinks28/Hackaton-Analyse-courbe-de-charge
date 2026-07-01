@@ -379,15 +379,12 @@ def tracer_talon_annuel_dynamique(data, fenetre_jours=30, percentile=5, out=None
 # ---------------------------------------------------------------------------
 # 6. Plateaux méthode dérivée
 # ---------------------------------------------------------------------------
-def tracer_plateaux(data, echelle="tout", debut=None, seuil_derivee=0.02, min_points=6, out=None, nom=None):
+def tracer_plateaux(data, echelle="tout", debut=None, type_lissage="ewm", window=15, seuil_derivee=0.01, min_points=6, out=None, nom=None):
     """
-    Détecte et met en évidence les plateaux de consommation (zones stables).
-    
-    Paramètres:
-      - span : paramètre de lissage exponentiel (plus il est grand, plus la courbe est lisse).
-      - seuil_derivee : seuil en % de l'amplitude max de la courbe en dessous duquel on considère 
-                        que la dérivée est "proche de zéro".
-      - min_points : nombre de points consécutifs minimum pour valider un plateau (évite les micro-plateaux).
+    Détecte et affiche les plateaux sur une seule couleur (version d'origine)
+    avec le choix du lissage dynamique :
+      - type_lissage = "ewm"    -> utilise ewm(span=window)
+      - type_lissage = "median" -> utilise rolling(window).median()
     """
     # 1. Gestion de l'échelle temporelle
     if echelle == "tout":
@@ -401,11 +398,15 @@ def tracer_plateaux(data, echelle="tout", debut=None, seuil_derivee=0.02, min_po
     if sous.empty:
         raise ValueError(f"Aucune donnee entre {t0.date()} et {t1.date()}")
 
-    # Somme des sous-compteurs pour avoir la charge globale
     charge_brute = sous.sum(axis=1)
-
-    # 2. Lissage exponentiel pour éliminer le bruit de fond
-    charge_lissee = charge_brute.rolling(window=15, center=True, min_periods=1).median()
+    
+    # --- CHOIX DU LISSAGE PARAMÉTRABLE ---
+    if type_lissage == "ewm":
+        charge_lissee = charge_brute.ewm(span=window, adjust=False).mean()
+    elif type_lissage == "median":
+        charge_lissee = charge_brute.rolling(window=window, center=True, min_periods=1).median()
+    else:
+        raise ValueError("type_lissage doit être 'ewm' ou 'median'")
 
     # 3. Calcul de la dérivée numérique (différence point à point)
     derivee = charge_lissee.diff().fillna(0)
@@ -481,15 +482,13 @@ def tracer_plateaux(data, echelle="tout", debut=None, seuil_derivee=0.02, min_po
     plt.show()
 
 
-def tracer_plateaux_histogramme_hauteurs(data, echelle="tout", debut=None, span=12, seuil_derivee=0.02, min_points=6, marge_pct=0.1, out=None, nom=None):
+
+def tracer_plateaux_regroupes(data, echelle="tout", debut=None, type_lissage="ewm", window=15, seuil_derivee=0.01, min_points=6, marge_pct=0.04, out=None, nom=None):
     """
-    Détecte les plateaux par dérivée, puis les regroupe par hauteur de plateau 
-    en appliquant une marge en % de la hauteur du plateau de référence.
-    
-    Paramètres:
-      - marge_pct : marge d'acceptation (0.10 = +/- 10% de la hauteur du plateau référent).
+    Détecte les plateaux avec un choix de lissage dynamique :
+      - type_lissage = "ewm"    -> utilise ewm(span=window) [Idéal courbes douces]
+      - type_lissage = "median" -> utilise rolling(window).median() [Idéal courbes très bruitées]
     """
-    # 1. Détection standard des plateaux par la dérivée
     if echelle == "tout":
         sous = data.copy()
         t0 = data.index.min()
@@ -502,7 +501,29 @@ def tracer_plateaux_histogramme_hauteurs(data, echelle="tout", debut=None, span=
         raise ValueError(f"Aucune donnee entre {t0.date()} et {t1.date()}")
 
     charge_brute = sous.sum(axis=1)
-    charge_lissee = charge_brute.rolling(window=15, center=True, min_periods=1).median()
+    
+    # --- CHOIX DU LISSAGE PARAMÉTRABLE ---
+    if type_lissage == "ewm":
+        # window sert ici de 'span'
+        charge_lissee = charge_brute.ewm(span=window, adjust=False).mean()
+    elif type_lissage == "median":
+        # window est le nombre de points de la fenêtre glissante. 
+        # min_periods=1 évite d'avoir des NaN au tout début de la courbe
+        charge_lissee = charge_brute.rolling(window=window, center=True, min_periods=1).median()
+    else:
+        raise ValueError("type_lissage doit être 'ewm' ou 'median'")
+    
+    if echelle == "tout":
+        sous = data.copy()
+        t0 = data.index.min()
+        t1 = data.index.max()
+    else:
+        sous, t0, t1 = fenetre(data, echelle, debut)
+        sous = sous.copy()
+
+    if sous.empty:
+        raise ValueError(f"Aucune donnee entre {t0.date()} et {t1.date()}")
+
 
     derivee = charge_lissee.diff().fillna(0)
     amplitude = charge_lissee.max() - charge_lissee.min()
@@ -510,71 +531,88 @@ def tracer_plateaux_histogramme_hauteurs(data, echelle="tout", debut=None, span=
     points_stables = derivee.abs() < seuil_abs
 
     groupes = (points_stables != points_stables.shift()).cumsum()
-    plateaux_detectes = []
+    plateaux_bruts = []
     
     for g_id, g_df in points_stables.groupby(groupes):
         if g_df.iloc[0] and len(g_df) >= min_points:
-            H_moyenne = charge_brute.loc[g_df.index].mean()
-            plateaux_detectes.append({'index': g_df.index, 'hauteur': H_moyenne, 'zone': None, 'couleur': None})
+            H_moyenne = charge_lissee.loc[g_df.index].mean()
+            plateaux_bruts.append({
+                't_debut': g_df.index[0],
+                't_fin': g_df.index[-1],
+                'index': g_df.index, 
+                'hauteur': H_moyenne,
+                'zone': None,
+                'couleur': None
+            })
 
-    # 2. REGROUPEMENT PAR PROXIMITÉ DE HAUTEUR (Algorithme Glouton par vagues)
+    # --- ÉTAPE DE FUSION DES PLATEAUX ADJACENTS CORROMPUS PAR LE BRUIT ---
+    plateaux_detectes = []
+    if plateaux_bruts:
+        # On trie d'abord par ordre chronologique pour détecter la proximité temporelle
+        plateaux_bruts.sort(key=lambda x: x['t_debut'])
+        
+        p_actuel = plateaux_bruts[0]
+        for p_suivant in plateaux_bruts[1:]:
+            # Si le plateau suivant est proche dans le temps (moins de 2h) AND a presque la même hauteur
+            ecart_temps = (p_suivant['t_debut'] - p_actuel['t_fin']).total_seconds() / 3600
+            ecart_hauteur = abs(p_suivant['hauteur'] - p_actuel['hauteur'])
+            
+            if ecart_temps < 2.0 and ecart_hauteur <= (marge_pct * p_actuel['hauteur']):
+                # On fusionne le suivant dans l'actuel
+                p_actuel['t_fin'] = p_suivant['t_fin']
+                p_actuel['index'] = p_actuel['index'].union(p_suivant['index'])
+                # La nouvelle hauteur devient la moyenne pondérée ou simple des deux
+                p_actuel['hauteur'] = (p_actuel['hauteur'] + p_suivant['hauteur']) / 2
+            else:
+                plateaux_detectes.append(p_actuel)
+                p_actuel = p_suivant
+        plateaux_detectes.append(p_actuel)
+
+    # --- REGROUPEMENT GLOBAL PAR POURCENTAGE ---
     if plateaux_detectes:
-        # On trie les plateaux du plus bas au plus haut
-        plateaux_detectes.sort(key=lambda x: x['hauteur'])
+        hauteurs_tris = sorted([p['hauteur'] for p in plateaux_detectes])
+        plafond_max_acceptable = hauteurs_tris[0] + (0.50 * amplitude)
+
+        niveaux_ref = [hauteurs_tris[0]]
         
-        # --- VAGUE 1 : TALON PRINCIPAL ---
-        # Le premier est forcément le talon principal de référence
-        ref_talon_1 = plateaux_detectes[0]['hauteur']
-        # Un plateau max acceptable pour éviter d'embarquer des sommets de pics dans le 2ème talon
-        plafond_max_acceptable = ref_talon_1 + (0.45 * amplitude) 
-        
+        restants_v2 = [h for h in hauteurs_tris if abs(h - niveaux_ref[0]) > (marge_pct * niveaux_ref[0]) and h <= plafond_max_acceptable]
+        if restants_v2:
+            niveaux_ref.append(restants_v2[0])
+            
+            restants_v3 = [h for h in hauteurs_tris if all(abs(h - r) > (marge_pct * r) for r in niveaux_ref) and h <= plafond_max_acceptable]
+            if restants_v3:
+                niveaux_ref.append(restants_v3[0])
+
+        couleurs_zones = {
+            0: ('Talon principal', '#2ca02c'),
+            1: ('Deuxième Talon', '#ff7f0e'),
+            2: ('Troisième Talon', '#9467bd')
+        }
+
         for p in plateaux_detectes:
-            # Si le plateau est dans la marge (+/- X% de sa propre hauteur de référence)
-            if abs(p['hauteur'] - ref_talon_1) <= (marge_pct * ref_talon_1):
-                p['zone'] = 'Talon principal'
-                p['couleur'] = '#2ca02c'  # Vert
+            if p['hauteur'] > plafond_max_acceptable:
+                continue
+            idx_proche = np.argmin([abs(p['hauteur'] - ref) for ref in niveaux_ref])
+            if abs(p['hauteur'] - niveaux_ref[idx_proche]) <= (marge_pct * niveaux_ref[idx_proche]):
+                p['zone'], p['couleur'] = couleurs_zones[idx_proche]
 
-        # --- VAGUE 2 : DEUXIÈME TALON ---
-        # On cherche le prochain plateau non classé qui reste sous le plafond max
-        plateaux_restants = [p for p in plateaux_detectes if p['zone'] is None and p['hauteur'] <= plafond_max_acceptable]
-        
-        if plateaux_restants:
-            # Le plus bas des restants devient la référence du deuxième talon
-            ref_talon_2 = plateaux_restants[0]['hauteur']
-            for p in plateaux_detectes:
-                if p['zone'] is None and abs(p['hauteur'] - ref_talon_2) <= (marge_pct * ref_talon_2):
-                    p['zone'] = 'Deuxième Talon'
-                    p['couleur'] = '#ff7f0e'  # Orange
-
-        # --- VAGUE 3 : TROISIEME TALON ---
-        # On cherche le prochain plateau non classé qui reste sous le plafond max
-        plateaux_restants_v3 = [p for p in plateaux_detectes if p['zone'] is None and p['hauteur'] <= plafond_max_acceptable]
-        
-        if plateaux_restants_v3:
-            # Le plus bas des restants devient la référence du troisième talon
-            ref_talon_3 = plateaux_restants_v3[0]['hauteur']
-            for p in plateaux_detectes:
-                if p['zone'] is None and abs(p['hauteur'] - ref_talon_3) <= (marge_pct * ref_talon_3):
-                    p['zone'] = 'Troisième Talon'
-                    p['couleur'] = '#9467bd'  # Violet (couleur standard matplotlib agréable)
-
-    # 3. Tracé du graphique
+    # --- 3. TRACÉ DU GRAPHIQUE ---
     fig, ax = plt.subplots(figsize=(14, 5.5))
     nom = nom or data.attrs.get("nom", "Courbe")
     
-    # Tout ce qui n'a pas été classé reste en "Zone sans plateaux / Pics" (Gris)
     ax.plot(charge_brute.index, charge_brute.values, lw=0.6, color="#7f7f7f", alpha=0.3, label="Zone sans plateaux / Pics")
     ax.plot(charge_lissee.index, charge_lissee.values, lw=1, color="#1f77b4", alpha=0.7, label="Charge lissée")
 
     legendes_ajoutees = set()
     for p in plateaux_detectes:
-        if p['zone'] is not None:  # On ne colore que les talons validés
+        if p['zone'] is not None:
             lbl = p['zone'] if p['zone'] not in legendes_ajoutees else ""
             legendes_ajoutees.add(p['zone'])
-            ax.axvspan(p['index'][0], p['index'][-1], color=p['couleur'], alpha=0.25, label=lbl)
+            # Tracé du bloc uni fusionné
+            ax.axvspan(p['t_debut'], p['t_fin'], color=p['couleur'], alpha=0.25, label=lbl)
             ax.plot(p['index'], [p['hauteur']] * len(p['index']), color=p['couleur'], lw=2.5)
 
-    ax.set_title(f"{nom} | Regroupement des plateaux par hauteur ({int(marge_pct*100)}% de marge) | {t0.date()} -> {t1.date()}", fontsize=13, fontweight="bold")
+    ax.set_title(f"{nom} | Regroupement des Plateaux ({int(marge_pct*100)}% de marge) | {t0.date()} -> {t1.date()}", fontsize=13, fontweight="bold")
     ax.set_ylabel("Puissance (W)")
     ax.set_ylim(bottom=0)
     ax.grid(alpha=0.2)
@@ -592,7 +630,6 @@ def tracer_plateaux_histogramme_hauteurs(data, echelle="tout", debut=None, span=
         plt.close(fig)
         return out
     plt.show()
-
 # ---------------------------------------------------------------------------
 # Utilisation en ligne de commande (facultatif)
 # Exemple :  python utils_energie.py Argile.xlsx --echelle semaine --debut 2022-03-07
