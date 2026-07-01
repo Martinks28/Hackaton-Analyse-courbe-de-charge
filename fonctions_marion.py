@@ -379,7 +379,7 @@ def tracer_talon_annuel_dynamique(data, fenetre_jours=30, percentile=5, out=None
 # ---------------------------------------------------------------------------
 # 6. Plateaux méthode dérivée
 # ---------------------------------------------------------------------------
-def tracer_plateaux(data, echelle="tout", debut=None, seuil_derivee=0.01, min_points=6, out=None, nom=None):
+def tracer_plateaux(data, echelle="tout", debut=None, seuil_derivee=0.02, min_points=6, out=None, nom=None):
     """
     Détecte et met en évidence les plateaux de consommation (zones stables).
     
@@ -481,7 +481,7 @@ def tracer_plateaux(data, echelle="tout", debut=None, seuil_derivee=0.01, min_po
     plt.show()
 
 
-def tracer_plateaux_histogramme_hauteurs(data, echelle="tout", debut=None, span=12, seuil_derivee=0.01, min_points=6, marge_pct=0.04, out=None, nom=None):
+def tracer_plateaux_histogramme_hauteurs(data, echelle="tout", debut=None, span=12, seuil_derivee=0.02, min_points=6, marge_pct=0.1, out=None, nom=None):
     """
     Détecte les plateaux par dérivée, puis les regroupe par hauteur de plateau 
     en appliquant une marge en % de la hauteur du plateau de référence.
@@ -592,9 +592,6 @@ def tracer_plateaux_histogramme_hauteurs(data, echelle="tout", debut=None, span=
         plt.close(fig)
         return out
     plt.show()
-
-
-
 
 # ---------------------------------------------------------------------------
 # Utilisation en ligne de commande (facultatif)
