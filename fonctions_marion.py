@@ -129,7 +129,7 @@ def fenetre(data, echelle, debut=None):
 # 3. Trace de la courbe brute
 # ---------------------------------------------------------------------------
 
-def tracer(data, echelle="tout", debut=None, titre=None, out=None):
+def tracer(data, echelle="tout", debut=None, titre=None, out=None, nom = None):
     # 1. Gestion de l'echelle "tout"
     if echelle == "tout":
         sous = data
@@ -148,8 +148,9 @@ def tracer(data, echelle="tout", debut=None, titre=None, out=None):
         ax.plot(sous.index, sous[col], lw=0.8, label=str(col))
 
     # Adaptation du titre par defaut selon l'echelle
-    titre_defaut = (f"Vue globale : {t0.date()} -> {t1.date()}" if echelle == "tout"
-                     else f"{echelle.capitalize()} : {t0.date()} -> {t1.date()}")
+    nom = nom or data.attrs.get("nom", "Courbe")
+    titre_defaut = (f"{nom} | Vue globale : {t0.date()} -> {t1.date()}" if echelle == "tout"
+                     else f"{nom} | {echelle.capitalize()} : {t0.date()} -> {t1.date()}")
     ax.set_title(titre or titre_defaut, fontsize=13, fontweight="bold")
 
     ax.set_ylabel("Puissance en W")
@@ -223,7 +224,7 @@ def _tracer_semaine_type_plotly(semaine_type, titre, ylabel, out=None):
     plt.show()
 
 
-def tracer_semaine_type_mois(data, mois, titre=None):
+def tracer_semaine_type_mois(data, mois, titre=None, nom=None):
     """
     Calcule et trace (avec Plotly) la semaine type pour un mois donne,
     en se basant sur les 12 derniers mois d'historique du fichier.
@@ -239,13 +240,14 @@ def tracer_semaine_type_mois(data, mois, titre=None):
         return None
 
     semaine_type = _construire_semaine_type(df_mois)
-    titre_final = titre or f"Semaine type - Mois n°{mois} (Calculee sur les 12 derniers mois)"
+    nom = nom or data.attrs.get("nom", "Courbe")
+    titre_final = titre or f"{nom} | Semaine type - Mois n°{mois} (Calculee sur les 12 derniers mois)"
     _tracer_semaine_type_plotly(semaine_type, titre_final, "Puissance (W)")
 
     return semaine_type
 
 
-def tracer_semaine_type_mois_filtre(data, mois, span=7, titre=None):
+def tracer_semaine_type_mois_filtre(data, mois, span=7, titre=None, nom=None):
     """
     Calcule et trace (avec Plotly) la semaine type pour un mois donne,
     en appliquant d'abord un filtre passe-bas exponentiel pour eliminer le bruit.
@@ -265,7 +267,8 @@ def tracer_semaine_type_mois_filtre(data, mois, span=7, titre=None):
         return None
 
     semaine_type = _construire_semaine_type(df_mois)
-    titre_final = titre or f"Semaine type (Lissee span={span}) - Mois n°{mois}"
+    nom = nom or data.attrs.get("nom", "Courbe")
+    titre_final = titre or f"{nom} | Semaine type (Lissee span={span}) - Mois n°{mois}"
     _tracer_semaine_type_plotly(semaine_type, titre_final, "Puissance lissee (W)")
 
     return semaine_type
@@ -371,6 +374,229 @@ def tracer_talon_annuel_dynamique(data, fenetre_jours=30, percentile=5, out=None
 
 
 # ---------------------------------------------------------------------------
+# 6. Plateaux méthode dérivée
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 6. Plateaux méthode dérivée
+# ---------------------------------------------------------------------------
+def tracer_plateaux(data, echelle="tout", debut=None, seuil_derivee=0.01, min_points=6, out=None, nom=None):
+    """
+    Détecte et met en évidence les plateaux de consommation (zones stables).
+    
+    Paramètres:
+      - span : paramètre de lissage exponentiel (plus il est grand, plus la courbe est lisse).
+      - seuil_derivee : seuil en % de l'amplitude max de la courbe en dessous duquel on considère 
+                        que la dérivée est "proche de zéro".
+      - min_points : nombre de points consécutifs minimum pour valider un plateau (évite les micro-plateaux).
+    """
+    # 1. Gestion de l'échelle temporelle
+    if echelle == "tout":
+        sous = data.copy()
+        t0 = data.index.min()
+        t1 = data.index.max()
+    else:
+        sous, t0, t1 = fenetre(data, echelle, debut)
+        sous = sous.copy()
+
+    if sous.empty:
+        raise ValueError(f"Aucune donnee entre {t0.date()} et {t1.date()}")
+
+    # Somme des sous-compteurs pour avoir la charge globale
+    charge_brute = sous.sum(axis=1)
+
+    # 2. Lissage exponentiel pour éliminer le bruit de fond
+    charge_lissee = charge_brute.rolling(window=15, center=True, min_periods=1).median()
+
+    # 3. Calcul de la dérivée numérique (différence point à point)
+    derivee = charge_lissee.diff().fillna(0)
+
+    # Définition d'un seuil dynamique adapté à la dynamique du signal
+    amplitude = charge_lissee.max() - charge_lissee.min()
+    if amplitude == 0:
+        amplitude = 1  # Évite une division par zéro si la courbe est plate d'origine
+    seuil_abs = seuil_derivee * amplitude
+
+    # Identification des points stables (dérivée proche de zéro)
+    points_stables = derivee.abs() < seuil_abs
+
+    # 4. Regroupement des points stables consécutifs en segments (plateaux)
+    # Astuce : une rupture (changement d'état) incrémente l'ID du groupe
+    groupes = (points_stables != points_stables.shift()).cumsum()
+    
+    # On ne garde que les groupes qui sont stables ET qui durent assez longtemps
+    plateaux_indices = []
+    for g_id, g_df in points_stables.groupby(groupes):
+        if g_df.iloc[0] and len(g_df) >= min_points:
+            plateaux_indices.append(g_df.index)
+
+    # 5. Construction du graphique Matplotlib
+    fig, ax = plt.subplots(figsize=(14, 5.5))
+    nom = nom or data.attrs.get("nom", "Courbe")
+    
+    # Tracé de la charge brute (en fond) et lissee (pour l'analyse)
+    ax.plot(charge_brute.index, charge_brute.values, lw=0.6, color="#1f4e79", alpha=0.3, label="Charge brute")
+    ax.plot(charge_lissee.index, charge_lissee.values, lw=1.2, color="#1f4e79", label="Charge lissée")
+    
+    # Coloriage des plateaux détectés
+
+    deja_legende = False
+    for idx_range in plateaux_indices:
+        # On extrait la valeur moyenne lissée sur ce plateau pour l'affichage visuel
+        val_moyenne = charge_lissee.loc[idx_range].mean()
+        # Optionnel : une petite ligne horizontale verte sur le plateau pour marquer sa hauteur théorique
+        ax.plot(idx_range, [val_moyenne] * len(idx_range), color="#2ca02c", lw=2)
+        deja_legende = True
+    """
+        # Colorie la zone temporelle du plateau
+        label_text = "Plateaux détectés" if not deja_legende else ""
+        ax.axvspan(idx_range[0], idx_range[-1], color="#2ca02c", alpha=0.2, label=label_text)
+    """  
+
+    
+    # 6. Habillage du graphique
+    titre_final = f"{nom} | Détection des plateaux (méthode dérivée) | {t0.date()} -> {t1.date()}"
+    ax.set_title(titre_final, fontsize=13, fontweight="bold")
+    ax.set_ylabel("Puissance (W)")
+    ax.set_ylim(bottom=0)
+    ax.grid(alpha=0.3)
+    ax.legend(loc="upper right")
+    
+    # Adaptations de l'axe X selon la durée affichée
+    if echelle == "jour":
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Hh"))
+    elif echelle == "semaine":
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%a %d/%m"))
+    elif echelle in ("tout", "annee"):
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+    else:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m/%y"))
+
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+    fig.tight_layout()
+
+    if out:
+        fig.savefig(out, dpi=110, bbox_inches="tight")
+        plt.close(fig)
+        return out
+    plt.show()
+
+
+def tracer_plateaux_histogramme_hauteurs(data, echelle="tout", debut=None, span=12, seuil_derivee=0.01, min_points=6, marge_pct=0.04, out=None, nom=None):
+    """
+    Détecte les plateaux par dérivée, puis les regroupe par hauteur de plateau 
+    en appliquant une marge en % de la hauteur du plateau de référence.
+    
+    Paramètres:
+      - marge_pct : marge d'acceptation (0.10 = +/- 10% de la hauteur du plateau référent).
+    """
+    # 1. Détection standard des plateaux par la dérivée
+    if echelle == "tout":
+        sous = data.copy()
+        t0 = data.index.min()
+        t1 = data.index.max()
+    else:
+        sous, t0, t1 = fenetre(data, echelle, debut)
+        sous = sous.copy()
+
+    if sous.empty:
+        raise ValueError(f"Aucune donnee entre {t0.date()} et {t1.date()}")
+
+    charge_brute = sous.sum(axis=1)
+    charge_lissee = charge_brute.rolling(window=15, center=True, min_periods=1).median()
+
+    derivee = charge_lissee.diff().fillna(0)
+    amplitude = charge_lissee.max() - charge_lissee.min()
+    seuil_abs = seuil_derivee * (amplitude if amplitude > 0 else 1)
+    points_stables = derivee.abs() < seuil_abs
+
+    groupes = (points_stables != points_stables.shift()).cumsum()
+    plateaux_detectes = []
+    
+    for g_id, g_df in points_stables.groupby(groupes):
+        if g_df.iloc[0] and len(g_df) >= min_points:
+            H_moyenne = charge_brute.loc[g_df.index].mean()
+            plateaux_detectes.append({'index': g_df.index, 'hauteur': H_moyenne, 'zone': None, 'couleur': None})
+
+    # 2. REGROUPEMENT PAR PROXIMITÉ DE HAUTEUR (Algorithme Glouton par vagues)
+    if plateaux_detectes:
+        # On trie les plateaux du plus bas au plus haut
+        plateaux_detectes.sort(key=lambda x: x['hauteur'])
+        
+        # --- VAGUE 1 : TALON PRINCIPAL ---
+        # Le premier est forcément le talon principal de référence
+        ref_talon_1 = plateaux_detectes[0]['hauteur']
+        # Un plateau max acceptable pour éviter d'embarquer des sommets de pics dans le 2ème talon
+        plafond_max_acceptable = ref_talon_1 + (0.45 * amplitude) 
+        
+        for p in plateaux_detectes:
+            # Si le plateau est dans la marge (+/- X% de sa propre hauteur de référence)
+            if abs(p['hauteur'] - ref_talon_1) <= (marge_pct * ref_talon_1):
+                p['zone'] = 'Talon principal'
+                p['couleur'] = '#2ca02c'  # Vert
+
+        # --- VAGUE 2 : DEUXIÈME TALON ---
+        # On cherche le prochain plateau non classé qui reste sous le plafond max
+        plateaux_restants = [p for p in plateaux_detectes if p['zone'] is None and p['hauteur'] <= plafond_max_acceptable]
+        
+        if plateaux_restants:
+            # Le plus bas des restants devient la référence du deuxième talon
+            ref_talon_2 = plateaux_restants[0]['hauteur']
+            for p in plateaux_detectes:
+                if p['zone'] is None and abs(p['hauteur'] - ref_talon_2) <= (marge_pct * ref_talon_2):
+                    p['zone'] = 'Deuxième Talon'
+                    p['couleur'] = '#ff7f0e'  # Orange
+
+        # --- VAGUE 3 : TROISIEME TALON ---
+        # On cherche le prochain plateau non classé qui reste sous le plafond max
+        plateaux_restants_v3 = [p for p in plateaux_detectes if p['zone'] is None and p['hauteur'] <= plafond_max_acceptable]
+        
+        if plateaux_restants_v3:
+            # Le plus bas des restants devient la référence du troisième talon
+            ref_talon_3 = plateaux_restants_v3[0]['hauteur']
+            for p in plateaux_detectes:
+                if p['zone'] is None and abs(p['hauteur'] - ref_talon_3) <= (marge_pct * ref_talon_3):
+                    p['zone'] = 'Troisième Talon'
+                    p['couleur'] = '#9467bd'  # Violet (couleur standard matplotlib agréable)
+
+    # 3. Tracé du graphique
+    fig, ax = plt.subplots(figsize=(14, 5.5))
+    nom = nom or data.attrs.get("nom", "Courbe")
+    
+    # Tout ce qui n'a pas été classé reste en "Zone sans plateaux / Pics" (Gris)
+    ax.plot(charge_brute.index, charge_brute.values, lw=0.6, color="#7f7f7f", alpha=0.3, label="Zone sans plateaux / Pics")
+    ax.plot(charge_lissee.index, charge_lissee.values, lw=1, color="#1f77b4", alpha=0.7, label="Charge lissée")
+
+    legendes_ajoutees = set()
+    for p in plateaux_detectes:
+        if p['zone'] is not None:  # On ne colore que les talons validés
+            lbl = p['zone'] if p['zone'] not in legendes_ajoutees else ""
+            legendes_ajoutees.add(p['zone'])
+            ax.axvspan(p['index'][0], p['index'][-1], color=p['couleur'], alpha=0.25, label=lbl)
+            ax.plot(p['index'], [p['hauteur']] * len(p['index']), color=p['couleur'], lw=2.5)
+
+    ax.set_title(f"{nom} | Regroupement des plateaux par hauteur ({int(marge_pct*100)}% de marge) | {t0.date()} -> {t1.date()}", fontsize=13, fontweight="bold")
+    ax.set_ylabel("Puissance (W)")
+    ax.set_ylim(bottom=0)
+    ax.grid(alpha=0.2)
+    ax.legend(loc="upper right")
+    
+    if echelle == "jour": ax.xaxis.set_major_formatter(mdates.DateFormatter("%Hh"))
+    elif echelle == "semaine": ax.xaxis.set_major_formatter(mdates.DateFormatter("%a %d/%m"))
+    else: ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m/%y"))
+
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+    fig.tight_layout()
+    
+    if out:
+        fig.savefig(out, dpi=110, bbox_inches="tight")
+        plt.close(fig)
+        return out
+    plt.show()
+
+
+
+
+# ---------------------------------------------------------------------------
 # Utilisation en ligne de commande (facultatif)
 # Exemple :  python utils_energie.py Argile.xlsx --echelle semaine --debut 2022-03-07
 # ---------------------------------------------------------------------------
@@ -390,3 +616,7 @@ if __name__ == "__main__":
           f"({len(data)} points, colonnes : {list(data.columns)})")
     tracer(data, args.echelle, args.debut,
            titre=Path(args.fichier).stem + f" - {args.echelle}", out=args.out)
+
+
+
+
