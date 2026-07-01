@@ -123,6 +123,7 @@ def tracer_talon_annuel_dynamique(path, fenetre_jours=30, percentile=5, out=None
     ax.grid(alpha=0.3)
     ax.legend(loc="upper right")
     
+
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
 
