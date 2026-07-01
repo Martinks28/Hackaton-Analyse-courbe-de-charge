@@ -256,4 +256,3 @@ def tracer_semaine_type_mois_filtre(data, mois, span=7, titre=None):
     
     return semaine_type
 
-
