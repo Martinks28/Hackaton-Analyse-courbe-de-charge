@@ -376,9 +376,6 @@ def tracer_talon_annuel_dynamique(data, fenetre_jours=30, percentile=5, out=None
 # ---------------------------------------------------------------------------
 # 6. Plateaux méthode dérivée
 # ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# 6. Plateaux méthode dérivée
-# ---------------------------------------------------------------------------
 def tracer_plateaux(data, echelle="tout", debut=None, type_lissage="ewm", window=15, seuil_derivee=0.01, min_points=6, out=None, nom=None):
     """
     Détecte et affiche les plateaux sur une seule couleur (version d'origine)
@@ -630,10 +627,94 @@ def tracer_plateaux_regroupes(data, echelle="tout", debut=None, type_lissage="ew
         plt.close(fig)
         return out
     plt.show()
+
 # ---------------------------------------------------------------------------
 # Utilisation en ligne de commande (facultatif)
 # Exemple :  python utils_energie.py Argile.xlsx --echelle semaine --debut 2022-03-07
 # ---------------------------------------------------------------------------
+def trouver_semaines_calendaires_extremes(data, out_max=None, out_min=None, nom=None):
+    """
+    Identifie la semaine calendaire (strictement du Lundi au Dimanche) 
+    la plus consommatrice (MAX) et la moins consommatrice (MIN) sur la période.
+    """
+    nom = nom or data.attrs.get("nom", "Bâtiment")
+    
+    # 1. Calcul de la charge totale instantanée
+    charge_totale = data.sum(axis=1)
+    
+    # 2. Conversion de la puissance (W) en Énergie (Wh) par point
+    pas_temps = pd.Series(charge_totale.index).diff().median()
+    facteur_horaire = pas_temps.total_seconds() / 3600  # ex: 10 min = 0.1666 h
+    energie_pas = charge_totale * facteur_horaire
+    
+    # 3. Regroupement par semaine calendaire stricte (Lundi au Dimanche)
+    # 'W-MON' agrège les données par semaine se terminant le dimanche soir / lundi 00:00
+    # closed='left' et label='left' permettent de marquer la semaine par son LUNDI de départ
+    conso_semaines = energie_pas.resample('W-MON', closed='left', label='left').sum()
+    
+    # Sécurité : On élimine la première et la dernière ligne si elles sont incomplètes 
+    # (ex: si ton fichier commence un mercredi, la première "semaine" n'aura que 4 jours)
+    if len(conso_semaines) > 2:
+        conso_semaines = conso_semaines.iloc[1:-1]
+    
+    if conso_semaines.empty:
+        raise ValueError("Pas assez de données pour extraire une semaine complète.")
+
+    # 4. Extraction des records (Max et Min)
+    # idxmax() et idxmin() nous donnent maintenant le LUNDI de début de la semaine
+    date_debut_max = conso_semaines.idxmax()
+    date_fin_max = date_debut_max + pd.Timedelta(days=6, hours=23, minutes=59)
+    
+    date_debut_min = conso_semaines.idxmin()
+    date_fin_min = date_debut_min + pd.Timedelta(days=6, hours=23, minutes=59)
+    
+    # Conversion en kWh pour l'affichage
+    conso_max_kwh = conso_semaines.max() / 1000
+    conso_min_kwh = conso_semaines.min() / 1000
+
+    print(f"=== ANALYSE CALENDAIRE (LUN-DIM) POUR {nom.upper()} ===")
+    print(f"Semaine MAX : Du Lundi {date_debut_max.date()} au Dimanche {date_fin_max.date()} | Conso : {conso_max_kwh:.1f} kWh\m²")
+    print(f"Semaine MIN : Du Lundi {date_debut_min.date()} au Dimanche {date_fin_min.date()} | Conso : {conso_min_kwh:.1f} kWh\m²\n")
+    if conso_min_kwh > 0:
+        ratio = conso_max_kwh / conso_min_kwh
+        print(f"La consommation est {ratio:.1f} fois plus importante sur la semaine MAX que sur la semaine MIN.\n")
+    else :
+        print("La consommation minimale est nulle, impossible de calculer un ratio.\n")
+    
+    # 5. Extraction des sous-ensembles de données pour les graphiques
+    df_semaine_max = data.loc[date_debut_max:date_fin_max]
+    df_semaine_min = data.loc[date_debut_min:date_fin_min]
+    
+    # 6. Tracé des graphiques
+    for df_semaine, t0, t1, type_ext, conso, path_out in [
+        (df_semaine_max, date_debut_max, date_fin_max, "MAX (Plus gourmande)", conso_max_kwh, out_max),
+        (df_semaine_min, date_debut_min, date_fin_min, "MIN (Plus sobre)", conso_min_kwh, out_min)
+    ]:
+        fig, ax = plt.subplots(figsize=(12, 5))
+        charge_sub = df_semaine.sum(axis=1)
+        
+        ax.plot(charge_sub.index, charge_sub.values, color="#1f77b4", lw=1)
+        ax.fill_between(charge_sub.index, 0, charge_sub.values, color="#1f77b4", alpha=0.1)
+        
+        ax.set_title(f"{nom} | Semaine {type_ext} : Lun {t0.date()} -> Dim {t1.date()} ({conso:.1f} kWh)", fontsize=12, fontweight="bold")
+        ax.set_ylabel("Puissance (W)")
+        ax.set_ylim(bottom=0)
+        ax.grid(alpha=0.2)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%a %d/%m"))
+        plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+        
+        fig.tight_layout()
+        if path_out:
+            fig.savefig(path_out, dpi=110, bbox_inches="tight")
+            plt.close(fig)
+        else:
+            plt.show()
+        
+    return (date_debut_max, date_fin_max), (date_debut_min, date_fin_min)
+
+
+
+
 
 if __name__ == "__main__":
     import argparse
